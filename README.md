@@ -1,0 +1,120 @@
+# WALK JUST! MVP
+
+速さや歩数の多さではなく、**自分で決めた目標にどれだけ正確に合わせられるか**を競うスマートフォン向けウォーキングPWAです。
+
+## 機能
+
+- TIME CHALLENGE: 任意の距離・目標タイムを設定し、到達時のタイム誤差で競う
+- STEP CHALLENGE: 任意の距離・目標歩数を設定し、到達後に入力した歩数の誤差で競う
+- TIME / STEPランキング（誤差昇順、同率は記録日時昇順、距離フィルタ付き）
+- Supabase未設定時のlocalStorage保存
+- インストール可能なPWAとオフライン用Service Worker
+- `?debug=1` で有効になる実機テスト用GPSデバッグ表示
+
+GPSは `watchPosition()` の高精度モードを使用します。精度50m超、2m未満の移動、100m超のジャンプ、4.5m/sを超える移動を除外し、採用地点間をHaversine式で加算します。目標線を越えた区間ではGPS時刻を線形補間してゴール時刻を決めます。
+
+## ローカルセットアップ
+
+```bash
+npm install
+copy .env.example .env
+npm run dev
+```
+
+位置情報APIは原則としてHTTPSまたはlocalhostでのみ利用できます。スマートフォンでの実地テストには、後述のNetlifyなどHTTPSで配信される環境を使用してください。
+
+## Supabase設定
+
+1. Supabaseでプロジェクトを作成します。
+2. SQL Editorで `supabase/schema.sql` を実行します。既存の旧MVPテーブルがある場合も、このSQLが必要な列を追加して移行します。
+3. Supabase Dashboardのプロジェクト「Connect」、または「Settings > API Keys」からProject URLとPublishable keyを取得します。既存プロジェクトではlegacy anon keyも利用できます。
+4. ローカルでは `.env`、Netlifyでは「Project configuration > Environment variables」に次の値を設定します。Netlify側ではBuildsスコープを含めてください。
+5. 環境変数の追加・変更後は再ビルド／再デプロイします。
+
+### 本番環境変数
+
+| 変数 | 必須 | 内容 |
+| --- | --- | --- |
+| `VITE_SUPABASE_URL` | Supabase利用時 | `https://<project-ref>.supabase.co` 形式のProject URL |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | 推奨 | ブラウザ用の `sb_publishable_...` キー |
+| `VITE_SUPABASE_ANON_KEY` | 既存環境のみ | legacy anon key。Publishable keyが未設定の場合だけ使用 |
+
+Supabaseを使わない場合、上記をすべて未設定にすると記録は各端末のlocalStorageへ保存されます。`VITE_` で始まる値はビルド済みJavaScriptから参照できる公開値です。RLSを有効にしたPublishable key／anon keyだけを使用し、Secret keyやlegacy `service_role` keyは絶対に設定しないでください。
+
+## Netlifyへの公開
+
+リポジトリ直下の `netlify.toml` に以下を設定済みです。
+
+- Build command: `npm run build`
+- Publish directory: `dist`
+- Node.js: 20
+- SPA rewrite: `/*` → `/index.html`（HTTP 200）
+- Service Worker: キャッシュ無効化ヘッダー
+- Geolocation: 同一オリジンで許可
+
+GitリポジトリをNetlifyへ接続し、環境変数を登録してDeployを実行します。デプロイ後は発行された `https://...netlify.app` URLをスマートフォンで開きます。手動アップロードする場合も、`npm run build` 後の `dist` ディレクトリが公開対象です。
+
+## GPSデバッグモード
+
+公開URLの末尾に `?debug=1` を付けます。
+
+```text
+https://your-site.netlify.app/?debug=1
+```
+
+チャレンジ開始後、計測画面に小さな `GPS DEBUG` パネルが表示されます。accuracy、現在の緯度経度、採用／除外ポイント数、最新区間距離、累積距離、現在速度、GPS取得時刻、精度の平均／最大／最小、表示状態の変化回数を確認できます。通常URLではパネル、GPS統計集計、visibilityイベント監視、テストログのlocalStorage読み込みを行いません。緯度経度は画面表示だけに使用し、結果やテストログには保存しません。
+
+### GPSテストログ
+
+デバッグパネルの「テストログ保存」から、計測中またはゴール後のGPS統計を端末のlocalStorageへ最大200件保存できます。実際の基準距離、ゴール地点の誤差、端末メモ、画面ロックの有無、コメントは任意入力です。「過去ログ」で履歴を確認し、「CSV出力」で全件をUTF-8 CSVとしてダウンロードできます。
+
+保存項目はchallenge mode、目標／計測距離、経過時間、最新GPS精度、採用／除外ポイント数、最新区間距離、GPS精度の平均／最大／最小、テスト日時、User-Agent、browser／PWA表示モード、表示状態変化回数、および任意入力項目です。テストログはランキングやSupabaseへ送信されません。ブラウザデータを消去するとログも消えるため、屋外テスト後はCSVを保存してください。
+
+## 実機テストチェックリスト
+
+安全で見通しのよいコースで、最初は0.1kmなど短い目標を使用してください。同じ条件で通常URLと `?debug=1` を比較します。
+
+### TIME CHALLENGE
+
+- [ ] 任意の目標距離を設定できる
+- [ ] 任意の目標タイムを設定できる
+- [ ] STARTでGPS計測が開始する
+- [ ] 実際の歩行に合わせて距離が加算される
+- [ ] 目標距離到達時に自動ゴールする
+- [ ] ゴール画面への遷移と保存が一度だけ行われる
+- [ ] 実タイムが保存される
+- [ ] 目標タイムとの差が正しく計算される
+- [ ] TIMEランキングへ正しく反映される
+
+### STEP CHALLENGE
+
+- [ ] 任意の目標距離を設定できる
+- [ ] 任意の目標歩数を設定できる
+- [ ] STARTでGPS計測が開始する
+- [ ] 目標距離到達時に自動ゴールする
+- [ ] ゴール後に実歩数を入力できる
+- [ ] 目標歩数との差が正しく計算される
+- [ ] STEPランキングへ正しく反映される
+
+### GPS・ブラウザ
+
+- [ ] 位置情報を拒否すると、権限設定を案内するエラーが表示される
+- [ ] accuracyが50mを超えるポイントは除外数だけ増え、距離へ加算されない
+- [ ] 停止中に距離が大きく増えない
+- [ ] 歩行中に100m超のジャンプや4.5m/s超の地点が加算されない
+- [ ] 2m未満の揺れが加算されない
+- [ ] 画面ロック中／解除後の更新停止・再開状況を記録する
+- [ ] iOS SafariとAndroid Chromeで、権限、画面ロック、PWA起動時の挙動差を確認する
+- [ ] ホーム画面へ追加し、standalone表示で起動できる
+- [ ] 更新をデプロイ後、Service Worker経由でも最新版へ更新される
+
+画面ロックやバックグラウンド中の位置情報更新はOS・ブラウザの省電力制御で停止する場合があります。チャレンジ中は画面を前面に保つ運用を推奨します。
+
+## 公開前確認
+
+```bash
+npm run build
+npm run preview
+```
+
+`dist/index.html`、`dist/manifest.webmanifest`、`dist/sw.js`、`dist/icon-192.png`、`dist/icon-512.png` が生成されていることを確認します。Supabase利用時はTIME／STEPの記録を各1件保存し、別端末またはプライベートブラウズでもランキングから読めることを確認してください。
