@@ -3,23 +3,19 @@ import { TrackingDisplay } from './components/TrackingDisplay'
 import { GpsTestTools } from './components/GpsTestTools'
 import { useWalkTracker } from './hooks/useWalkTracker'
 import { formatTime, secondsFromMinutesSeconds } from './lib/format'
+import { createUuid, legacyNickname, loadProfile, nicknameError, nicknameLength, NICKNAME_MAX_LENGTH, registerProfile, updateNickname } from './lib/profile'
+import type { Profile } from './lib/profile'
 import { getRankings, saveResult } from './lib/results'
 import type { ChallengeMode, ChallengeResult, DistanceFilter } from './types'
 
-type Screen = 'home' | 'setup' | 'tracking' | 'steps-entry' | 'result' | 'ranking'
+type Screen = 'home' | 'profile' | 'setup' | 'tracking' | 'steps-entry' | 'result' | 'ranking'
 
 const DISTANCE_FILTERS: { value: DistanceFilter; label: string }[] = [
   { value: 'all', label: '全距離' }, { value: 500, label: '0.5km' }, { value: 1000, label: '1km' },
   { value: 2000, label: '2km' }, { value: 3000, label: '3km' }, { value: 5000, label: '5km' },
 ]
 
-function uid(): string {
-  return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
-}
-
-function inputError(name: string, distanceKm: number, mode: ChallengeMode, targetMin: number, targetSec: number, targetSteps: number): string | null {
-  if (!name.trim()) return '表示名を入力してください。'
-  if (name.trim().length > 40) return '表示名は40文字以内で入力してください。'
+function inputError(distanceKm: number, mode: ChallengeMode, targetMin: number, targetSec: number, targetSteps: number): string | null {
   if (!Number.isFinite(distanceKm) || distanceKm < 0.1) return '目標距離は0.1km以上で入力してください。'
   if (distanceKm > 100) return '目標距離は100km以下で入力してください。'
   if (mode === 'time' && (!Number.isInteger(targetMin) || targetMin < 0 || !Number.isInteger(targetSec) || targetSec < 0 || targetSec > 59 || targetMin * 60 + targetSec <= 0)) return '目標タイムは秒を0〜59、合計1秒以上の整数で入力してください。'
@@ -31,7 +27,9 @@ export default function App() {
   const debugEnabled = useMemo(() => new URLSearchParams(window.location.search).get('debug') === '1', [])
   const [screen, setScreen] = useState<Screen>('home')
   const [mode, setMode] = useState<ChallengeMode>('time')
-  const [playerName, setPlayerName] = useState(() => localStorage.getItem('walk-just-name') ?? '')
+  const [profile, setProfile] = useState<Profile | null>(() => loadProfile())
+  const [nicknameDraft, setNicknameDraft] = useState(() => (profile ? profile.nickname : legacyNickname()))
+  const [nicknameMessage, setNicknameMessage] = useState<string | null>(null)
   const [distanceKm, setDistanceKm] = useState(1)
   const [targetMin, setTargetMin] = useState(12)
   const [targetSec, setTargetSec] = useState(0)
@@ -51,7 +49,7 @@ export default function App() {
     () => secondsFromMinutesSeconds(targetMin, targetSec),
     [targetMin, targetSec],
   )
-  const validationMessage = inputError(playerName, distanceKm, mode, targetMin, targetSec, targetSteps)
+  const validationMessage = inputError(distanceKm, mode, targetMin, targetSec, targetSteps)
 
   useEffect(() => {
     if (tracker.status !== 'finished' || screen !== 'tracking' || commitStarted.current) return
@@ -79,9 +77,10 @@ export default function App() {
   }
 
   async function commitTimeResult(): Promise<void> {
+    if (!profile) return
     const actualSeconds = Math.max(0, Math.round(tracker.elapsedMs / 1000))
     await persistResult({
-      id: uid(), playerName: playerName.trim(), mode: 'time', targetDistanceM,
+      id: createUuid(), playerName: profile.nickname, anonymousUserId: profile.anonymousUserId, mode: 'time', targetDistanceM,
       targetValue: timeTargetSeconds, actualValue: actualSeconds,
       errorValue: Math.abs(actualSeconds - timeTargetSeconds), elapsedSeconds: actualSeconds,
       createdAt: new Date().toISOString(),
@@ -89,6 +88,7 @@ export default function App() {
   }
 
   async function commitStepsResult(): Promise<void> {
+    if (!profile) return
     const steps = Number(actualSteps)
     if (!Number.isInteger(steps) || steps <= 0) {
       setMessage('実際の歩数を1歩以上の整数で入力してください。')
@@ -98,7 +98,7 @@ export default function App() {
     commitStarted.current = true
     const elapsedSeconds = Math.max(0, Math.round(tracker.elapsedMs / 1000))
     await persistResult({
-      id: uid(), playerName: playerName.trim(), mode: 'steps', targetDistanceM,
+      id: createUuid(), playerName: profile.nickname, anonymousUserId: profile.anonymousUserId, mode: 'steps', targetDistanceM,
       targetValue: targetSteps, actualValue: steps, errorValue: Math.abs(steps - targetSteps),
       elapsedSeconds, createdAt: new Date().toISOString(),
     })
@@ -118,11 +118,43 @@ export default function App() {
       setMessage(validationMessage)
       return
     }
-    localStorage.setItem('walk-just-name', playerName.trim())
     setMessage(null)
     commitStarted.current = false
     setScreen('tracking')
     tracker.start()
+  }
+
+  function submitRegistration(): void {
+    const error = nicknameError(nicknameDraft)
+    if (error) {
+      setNicknameMessage(error)
+      return
+    }
+    const next = registerProfile(nicknameDraft)
+    setProfile(next)
+    setNicknameDraft(next.nickname)
+    setNicknameMessage(null)
+    setScreen('home')
+  }
+
+  function openProfile(): void {
+    if (!profile) return
+    setNicknameDraft(profile.nickname)
+    setNicknameMessage(null)
+    setScreen('profile')
+  }
+
+  function submitNicknameChange(): void {
+    if (!profile) return
+    const error = nicknameError(nicknameDraft)
+    if (error) {
+      setNicknameMessage(error)
+      return
+    }
+    const next = updateNickname(profile, nicknameDraft)
+    setProfile(next)
+    setNicknameDraft(next.nickname)
+    setNicknameMessage('ニックネームを変更しました。')
   }
 
   async function openRanking(nextMode: ChallengeMode, filter: DistanceFilter = distanceFilter): Promise<void> {
@@ -141,11 +173,36 @@ export default function App() {
     }
   }
 
+  if (!profile) {
+    const draftError = nicknameError(nicknameDraft)
+    return (
+      <main className="app-shell">
+        <section className="panel hero register-panel">
+          <h1>WALK JUST!</h1>
+          <p>ランキングで使うニックネームを登録してください</p>
+          <form onSubmit={(event) => { event.preventDefault(); submitRegistration() }} noValidate>
+            <label>ニックネーム<input value={nicknameDraft} onChange={(event) => { setNicknameDraft(event.target.value); setNicknameMessage(null) }} placeholder="例：YUKI" autoComplete="nickname" enterKeyHint="done" aria-describedby="nickname-hint" /></label>
+            <small id="nickname-hint" className={`field-hint${nicknameLength(nicknameDraft) > NICKNAME_MAX_LENGTH ? ' over' : ''}`}>{nicknameLength(nicknameDraft)} / {NICKNAME_MAX_LENGTH}文字</small>
+            {nicknameMessage && <p className="error" role="alert">{nicknameMessage}</p>}
+            <button className="primary" type="submit" disabled={Boolean(draftError)}>登録してはじめる</button>
+          </form>
+          <p className="note">メールアドレスやパスワードは不要です。ニックネームはあとから変更できます。</p>
+        </section>
+      </main>
+    )
+  }
+
+  const nicknameDraftError = nicknameError(nicknameDraft)
+  const nicknameUnchanged = nicknameDraft.trim() === profile.nickname
+
   return (
     <main className="app-shell">
       {screen === 'home' && (
         <section className="panel hero">
-          <div className="eyebrow">WALK JUST!</div>
+          <div className="home-top">
+            <div className="eyebrow">WALK JUST!</div>
+            <button className="profile-chip" onClick={openProfile} aria-label={`${profile.nickname}さん（ニックネームを変更）`}><span>{profile.nickname}さん</span><small>変更</small></button>
+          </div>
           <h1>速さじゃない。<br />ピッタリを競おう。</h1>
           <p>自分で決めた目標に、どれだけ正確に合わせられるかを競うウォーキングゲーム。</p>
           <div className="grid">
@@ -159,12 +216,28 @@ export default function App() {
         </section>
       )}
 
+      {screen === 'profile' && (
+        <section className="panel">
+          <button className="text-button" onClick={() => setScreen('home')}>← 戻る</button>
+          <div className="eyebrow">PROFILE</div>
+          <h2>プロフィール設定</h2>
+          <form onSubmit={(event) => { event.preventDefault(); submitNicknameChange() }} noValidate>
+            <label>ニックネーム<input value={nicknameDraft} onChange={(event) => { setNicknameDraft(event.target.value); setNicknameMessage(null) }} autoComplete="nickname" enterKeyHint="done" aria-describedby="nickname-hint" /></label>
+            <small id="nickname-hint" className={`field-hint${nicknameLength(nicknameDraft) > NICKNAME_MAX_LENGTH ? ' over' : ''}`}>{nicknameLength(nicknameDraft)} / {NICKNAME_MAX_LENGTH}文字</small>
+            {nicknameMessage && <p className={nicknameMessage === 'ニックネームを変更しました。' ? 'success' : 'error'} role="status">{nicknameMessage}</p>}
+            <button className="primary" type="submit" disabled={Boolean(nicknameDraftError) || nicknameUnchanged}>変更を保存</button>
+          </form>
+          <p className="note">変更後のニックネームは、これから保存する記録に使われます。過去の記録の表示名は変わりません。</p>
+          <p className="note device-id">端末ID：{profile.anonymousUserId.slice(0, 8)}…（変更されません）</p>
+        </section>
+      )}
+
       {screen === 'setup' && (
         <section className="panel">
           <button className="text-button" onClick={() => setScreen('home')}>← 戻る</button>
           <div className="eyebrow">{mode === 'time' ? 'TIME CHALLENGE' : 'STEP CHALLENGE'}</div>
           <h2>目標を設定</h2>
-          <label>表示名<input maxLength={40} value={playerName} onChange={(event) => setPlayerName(event.target.value)} placeholder="例：YUKI" /></label>
+          <div className="player-line"><span>プレイヤー</span><strong>{profile.nickname}さん</strong></div>
           <label>目標距離（km）<input type="number" inputMode="decimal" min="0.1" max="100" step="0.1" value={distanceKm} onChange={(event) => setDistanceKm(event.target.valueAsNumber)} /></label>
           {mode === 'time' ? (
             <div><span className="label-title">目標タイム</span><div className="row">
@@ -206,7 +279,7 @@ export default function App() {
           <div className="tabs"><button className={rankingMode === 'time' ? 'active' : ''} onClick={() => void openRanking('time')}>TIME</button><button className={rankingMode === 'steps' ? 'active' : ''} onClick={() => void openRanking('steps')}>STEPS</button></div>
           <div className="filter-row" aria-label="距離フィルタ">{DISTANCE_FILTERS.map((filter) => <button key={filter.label} className={distanceFilter === filter.value ? 'active' : ''} onClick={() => void openRanking(rankingMode, filter.value)}>{filter.label}</button>)}</div>
           {message && <p className="error" role="alert">{message}</p>}
-          <ol className="ranking-list">{rankings.map((item, index) => <li key={item.id}><b>#{index + 1}</b><div><strong>{item.playerName}</strong><small>{(item.targetDistanceM / 1000).toFixed(2)}km</small><small>目標 {item.mode === 'time' ? formatTime(item.targetValue * 1000) : `${item.targetValue.toLocaleString()}歩`} ／ 実績 {item.mode === 'time' ? formatTime(item.actualValue * 1000) : `${item.actualValue.toLocaleString()}歩`}</small></div><span className="rank-error">±{item.errorValue}{rankingMode === 'time' ? '秒' : '歩'}</span></li>)}</ol>
+          <ol className="ranking-list">{rankings.map((item, index) => <li key={item.id} className={item.anonymousUserId && item.anonymousUserId === profile.anonymousUserId ? 'mine' : undefined}><b>#{index + 1}</b><div><strong>{item.playerName}{item.anonymousUserId && item.anonymousUserId === profile.anonymousUserId && <em className="you-badge">YOU</em>}</strong><small>{(item.targetDistanceM / 1000).toFixed(2)}km</small><small>目標 {item.mode === 'time' ? formatTime(item.targetValue * 1000) : `${item.targetValue.toLocaleString()}歩`} ／ 実績 {item.mode === 'time' ? formatTime(item.actualValue * 1000) : `${item.actualValue.toLocaleString()}歩`}</small></div><span className="rank-error">±{item.errorValue}{rankingMode === 'time' ? '秒' : '歩'}</span></li>)}</ol>
           {busy && <p className="empty">読み込み中…</p>}{!busy && rankings.length === 0 && !message && <p className="empty">まだ記録がありません。</p>}
         </section>
       )}

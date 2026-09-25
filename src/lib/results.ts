@@ -6,6 +6,7 @@ const LOCAL_KEY = 'walk-just-results'
 type DbResult = {
   id: string
   player_name: string
+  anonymous_user_id?: string | null
   mode: ChallengeMode
   target_distance_m: number
   target_time_seconds: number | null
@@ -48,7 +49,7 @@ export async function saveResult(result: ChallengeResult): Promise<void> {
   }
 
   const timeMode = result.mode === 'time'
-  const { error } = await supabase.from('challenge_results').insert({
+  const row: Omit<DbResult, 'anonymous_user_id'> = {
     id: result.id,
     player_name: result.playerName,
     mode: result.mode,
@@ -61,8 +62,22 @@ export async function saveResult(result: ChallengeResult): Promise<void> {
     error_steps: timeMode ? null : result.errorValue,
     elapsed_seconds: result.elapsedSeconds,
     created_at: result.createdAt,
-  })
-  if (error) throw error
+  }
+  const rowWithUser: Omit<DbResult, 'anonymous_user_id'> & { anonymous_user_id?: string } =
+    result.anonymousUserId ? { ...row, anonymous_user_id: result.anonymousUserId } : row
+  const { error } = await supabase.from('challenge_results').insert(rowWithUser)
+  if (!error) return
+  // anonymous_user_id列の追加マイグレーション未実行時は、列なしで保存して従来通り動作させる
+  if (result.anonymousUserId && isMissingAnonymousUserIdColumn(error)) {
+    const retry = await supabase.from('challenge_results').insert(row)
+    if (retry.error) throw retry.error
+    return
+  }
+  throw error
+}
+
+function isMissingAnonymousUserIdColumn(error: { code?: string; message?: string }): boolean {
+  return (error.code === 'PGRST204' || error.code === '42703') && (error.message ?? '').includes('anonymous_user_id')
 }
 
 function fromDb(row: DbResult): ChallengeResult {
@@ -70,6 +85,7 @@ function fromDb(row: DbResult): ChallengeResult {
   return {
     id: row.id,
     playerName: row.player_name,
+    anonymousUserId: row.anonymous_user_id ?? null,
     mode: row.mode,
     targetDistanceM: row.target_distance_m,
     targetValue: (isTime ? row.target_time_seconds : row.target_steps) ?? 0,

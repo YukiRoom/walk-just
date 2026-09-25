@@ -6,12 +6,24 @@
 
 - TIME CHALLENGE: 任意の距離・目標タイムを設定し、到達時のタイム誤差で競う
 - STEP CHALLENGE: 任意の距離・目標歩数を設定し、到達後に入力した歩数の誤差で競う
-- TIME / STEPランキング（誤差昇順、同率は記録日時昇順、距離フィルタ付き）
+- ニックネーム登録（初回起動時に1〜20文字で登録。メール・パスワード不要。ホームの「○○さん」から変更可能）
+- TIME / STEPランキング（誤差昇順、同率は記録日時昇順、距離フィルタ付き。登録ニックネームで表示）
 - Supabase未設定時のlocalStorage保存
 - インストール可能なPWAとオフライン用Service Worker
 - `?debug=1` で有効になる実機テスト用GPSデバッグ表示
 
 GPSは `watchPosition()` の高精度モードを使用します。精度50m超、2m未満の移動、100m超のジャンプ、4.5m/sを超える移動を除外し、採用地点間をHaversine式で加算します。目標線を越えた区間ではGPS時刻を線形補間してゴール時刻を決めます。
+
+## ニックネームと匿名ユーザーID
+
+初回起動時にニックネームを登録すると、端末ごとの匿名ユーザーID（`crypto.randomUUID()`、非対応環境では `crypto.getRandomValues()` によるUUID v4）を生成し、localStorageへ保存します。
+
+| localStorageキー | 内容 |
+| --- | --- |
+| `walk-just-nickname` | 登録ニックネーム（前後の空白を除去、1〜20文字） |
+| `walk-just-anonymous-user-id` | 匿名ユーザーID。ニックネームを変更しても変わりません |
+
+記録には保存時点のニックネーム（`player_name`）と匿名ユーザーID（`anonymous_user_id`）を保存します。同じニックネームでも匿名ユーザーIDが異なれば別ユーザーとして扱い、ランキングでは自分の記録に `YOU` を表示します。匿名ユーザーIDは認証情報ではありません。ブラウザデータを消去すると新しいユーザーとして再登録になります。
 
 ## ローカルセットアップ
 
@@ -27,6 +39,7 @@ npm run dev
 
 1. Supabaseでプロジェクトを作成します。
 2. SQL Editorで `supabase/schema.sql` を実行します。既存の旧MVPテーブルがある場合も、このSQLが必要な列を追加して移行します。
+   - すでに `challenge_results` を作成済みの環境では、`supabase/migrations/20260925_add_anonymous_user_id.sql` だけを実行すれば `anonymous_user_id` 列（NULL許可）が追加されます。未実行でもアプリは列なしで保存を続けます。
 3. Supabase Dashboardのプロジェクト「Connect」、または「Settings > API Keys」からProject URLとPublishable keyを取得します。既存プロジェクトではlegacy anon keyも利用できます。
 4. ローカルでは `.env`、Netlifyでは「Project configuration > Environment variables」に次の値を設定します。Netlify側ではBuildsスコープを含めてください。
 5. 環境変数の追加・変更後は再ビルド／再デプロイします。

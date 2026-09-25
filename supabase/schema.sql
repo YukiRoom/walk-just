@@ -1,6 +1,7 @@
 create table if not exists public.challenge_results (
   id uuid primary key,
   user_id uuid null references auth.users(id) on delete set null,
+  anonymous_user_id uuid null,
   player_name text not null check (char_length(player_name) between 1 and 40),
   mode text not null check (mode in ('time', 'steps')),
   target_distance_m integer not null check (target_distance_m between 100 and 100000),
@@ -29,6 +30,8 @@ alter table public.challenge_results add column if not exists error_seconds inte
 alter table public.challenge_results add column if not exists target_steps integer null check (target_steps > 0);
 alter table public.challenge_results add column if not exists actual_steps integer null check (actual_steps > 0);
 alter table public.challenge_results add column if not exists error_steps integer null check (error_steps >= 0);
+-- ニックネーム登録機能（supabase/migrations/20260925_add_anonymous_user_id.sql と同内容）
+alter table public.challenge_results add column if not exists anonymous_user_id uuid null;
 
 do $$
 begin
@@ -70,6 +73,9 @@ on public.challenge_results(mode, error_steps asc, created_at asc) where mode = 
 
 create index if not exists challenge_results_distance_idx
 on public.challenge_results(mode, target_distance_m);
+
+create index if not exists challenge_results_anonymous_user_idx
+on public.challenge_results(anonymous_user_id);
 
 alter table public.challenge_results enable row level security;
 

@@ -3,6 +3,8 @@ export type ChallengeMode = 'time' | 'steps'
 export type ChallengeResult = {
   id: string
   playerName: string
+  /** 端末ごとの匿名ユーザーID。旧データやスキーマ未移行時は未設定 */
+  anonymousUserId?: string | null
   mode: ChallengeMode
   targetDistanceM: number
   targetValue: number
