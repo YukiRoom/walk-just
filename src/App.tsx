@@ -43,17 +43,34 @@ export default function App() {
   const [rankings, setRankings] = useState<ChallengeResult[]>([])
   const [message, setMessage] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [swUpdateTick, setSwUpdateTick] = useState(0)
   const commitStarted = useRef(false)
+  const swUpdateReady = useRef(false)
+
+  // 新しいService Workerが有効になったら、ホーム画面にいる時だけ再読み込みして最新版を表示する
+  // （計測中・結果入力中は再読み込みしない。初回インストール時も再読み込みしない）
+  useEffect(() => {
+    if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) return
+    const handleControllerChange = () => { swUpdateReady.current = true; setSwUpdateTick((tick) => tick + 1) }
+    navigator.serviceWorker.addEventListener('controllerchange', handleControllerChange)
+    return () => navigator.serviceWorker.removeEventListener('controllerchange', handleControllerChange)
+  }, [])
 
   const targetDistanceM = Math.round(distanceKm * 1000)
   const tracker = useWalkTracker(Number.isFinite(targetDistanceM) ? Math.max(100, targetDistanceM) : 100, debugEnabled)
-  // 計測画面でGPS計測中の間だけ画面の自動スリープを防ぐ（ゴール・中止・画面離脱で解除）
-  const wakeLock = useScreenWakeLock(screen === 'tracking' && tracker.status === 'tracking')
+  // 計測画面でGPS準備中・計測中の間だけ画面の自動スリープを防ぐ（ゴール・中止・画面離脱で解除）
+  const wakeLock = useScreenWakeLock(screen === 'tracking' && (tracker.status === 'preparing' || tracker.status === 'tracking'))
   const timeTargetSeconds = useMemo(
     () => secondsFromMinutesSeconds(targetMin, targetSec),
     [targetMin, targetSec],
   )
   const validationMessage = inputError(distanceKm, mode, targetMin, targetSec, targetSteps)
+
+  useEffect(() => {
+    if (!swUpdateReady.current || screen !== 'home' || !profile) return
+    swUpdateReady.current = false
+    window.location.reload()
+  }, [swUpdateTick, screen, profile])
 
   useEffect(() => {
     if (tracker.status !== 'finished' || screen !== 'tracking' || commitStarted.current) return
@@ -125,7 +142,8 @@ export default function App() {
     setMessage(null)
     commitStarted.current = false
     setScreen('tracking')
-    tracker.start()
+    // GPS準備を開始（タイマーは準備完了後の「計測スタート」で開始）
+    tracker.prepare()
     // ユーザー操作（STARTタップ）の中で要求する。失敗してもGPS計測は継続する
     wakeLock.request()
   }
@@ -187,7 +205,7 @@ export default function App() {
           <h1>WALK JUST!</h1>
           <p>ランキングで使うニックネームを登録してください</p>
           <form onSubmit={(event) => { event.preventDefault(); submitRegistration() }} noValidate>
-            <label>ニックネーム<input value={nicknameDraft} onChange={(event) => { setNicknameDraft(event.target.value); setNicknameMessage(null) }} placeholder="例：YUKI" autoComplete="nickname" enterKeyHint="done" aria-describedby="nickname-hint" /></label>
+            <label>ニックネーム<input value={nicknameDraft} onChange={(event) => { setNicknameDraft(event.target.value); setNicknameMessage(null) }} autoComplete="nickname" enterKeyHint="done" aria-describedby="nickname-hint" /></label>
             <small id="nickname-hint" className={`field-hint${nicknameLength(nicknameDraft) > NICKNAME_MAX_LENGTH ? ' over' : ''}`}>{nicknameLength(nicknameDraft)} / {NICKNAME_MAX_LENGTH}文字</small>
             {nicknameMessage && <p className="error" role="alert">{nicknameMessage}</p>}
             <button className="primary" type="submit" disabled={Boolean(draftError)}>登録してはじめる</button>
@@ -220,6 +238,7 @@ export default function App() {
             <button className="secondary" onClick={() => void openRanking('steps')}>歩数ランキング</button>
           </div>
           <InstallGuide />
+          <p className="build-id">build {__APP_BUILD_ID__}</p>
         </section>
       )}
 
@@ -260,7 +279,7 @@ export default function App() {
         </section>
       )}
 
-      {screen === 'tracking' && <TrackingDisplay mode={mode} distanceM={tracker.distanceM} targetDistanceM={targetDistanceM} elapsedMs={tracker.elapsedMs} error={tracker.error ?? message} debugInfo={debugEnabled ? tracker.debugInfo : undefined} wakeLock={wakeLock} onCancel={() => { tracker.cancel(); setScreen('home') }} />}
+      {screen === 'tracking' && <TrackingDisplay mode={mode} distanceM={tracker.distanceM} targetDistanceM={targetDistanceM} elapsedMs={tracker.elapsedMs} error={tracker.error ?? message} debugInfo={debugEnabled ? tracker.debugInfo : undefined} wakeLock={wakeLock} status={tracker.status} readiness={tracker.readiness} onBegin={tracker.begin} onCancel={() => { tracker.cancel(); setScreen('home') }} />}
 
       {screen === 'steps-entry' && (
         <section className="panel"><div className="eyebrow">GOAL!</div><h2>何歩で歩きましたか？</h2><p>目標：{targetSteps.toLocaleString()}歩</p>

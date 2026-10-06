@@ -191,3 +191,13 @@ progress { width:100%; height:14px; accent-color:#101828; }
 .install-guide-close { flex:0 0 auto; width:32px; height:32px; border:0; border-radius:999px; background:white; color:#475467; font-size:18px; line-height:1; cursor:pointer; }
 .install-guide ol { margin:10px 0 0; padding-left:20px; font-size:14px; line-height:1.7; }
 .install-guide p { margin:10px 0 0; font-size:12px; line-height:1.6; color:#475467; }
+
+.gps-prepare h2 { margin-bottom:18px; }
+.gps-prepare p { font-size:14px; color:#475467; }
+.gps-prepare-status { display:flex; align-items:center; justify-content:center; gap:12px; padding:16px; border-radius:18px; background:#f8fafc; flex-wrap:wrap; }
+.gps-prepare-status.ready { background:#ecfdf3; color:#067647; }
+.gps-prepare-dots { display:flex; gap:6px; }
+.gps-prepare-dots i { width:12px; height:12px; border-radius:999px; background:#d0d5dd; }
+.gps-prepare-dots i.on { background:#12b76a; }
+.gps-prepare-force { display:block; margin:14px auto 0; color:#475467; font-size:13px; text-decoration:underline; }
+.build-id { margin:18px 0 0; text-align:right; font-size:11px; color:#98a2b3; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }

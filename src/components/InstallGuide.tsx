@@ -1,28 +1,13 @@
 import { useState } from 'react'
 import { isIos, isStandalone } from '../lib/platform'
 
-const DISMISS_KEY = 'walk-just-install-guide-dismissed'
-
-function initiallyVisible(): boolean {
-  if (!isIos() || isStandalone()) return false
-  try {
-    return sessionStorage.getItem(DISMISS_KEY) !== '1'
-  } catch {
-    return true
-  }
-}
-
 /** iPhoneのSafari等で開いている場合だけ、ホーム画面への追加を案内する（PWA起動時は表示しない） */
 export function InstallGuide() {
-  const [visible, setVisible] = useState(initiallyVisible)
+  // URLのクエリ（?debug=1等）や過去の「×」操作に左右されず、iOSの非PWA表示なら毎回表示する
+  const [visible, setVisible] = useState(() => isIos() && !isStandalone())
   if (!visible) return null
 
   function dismiss(): void {
-    try {
-      sessionStorage.setItem(DISMISS_KEY, '1')
-    } catch {
-      // 保存できなくても今回の表示だけ閉じる
-    }
     setVisible(false)
   }
 

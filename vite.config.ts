@@ -2,7 +2,13 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
+// Netlifyのビルドでは COMMIT_REF にコミットSHAが入る（ローカルは 'local'）
+const buildId = (process.env.COMMIT_REF ?? 'local').slice(0, 7)
+
 export default defineConfig({
+  define: {
+    __APP_BUILD_ID__: JSON.stringify(buildId),
+  },
   plugins: [
     react(),
     VitePWA({
