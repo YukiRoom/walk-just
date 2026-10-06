@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { TrackingDisplay } from './components/TrackingDisplay'
 import { GpsTestTools } from './components/GpsTestTools'
+import { InstallGuide } from './components/InstallGuide'
+import { useScreenWakeLock } from './hooks/useScreenWakeLock'
 import { useWalkTracker } from './hooks/useWalkTracker'
 import { formatTime, secondsFromMinutesSeconds } from './lib/format'
 import { createUuid, legacyNickname, loadProfile, nicknameError, nicknameLength, NICKNAME_MAX_LENGTH, registerProfile, updateNickname } from './lib/profile'
@@ -45,6 +47,8 @@ export default function App() {
 
   const targetDistanceM = Math.round(distanceKm * 1000)
   const tracker = useWalkTracker(Number.isFinite(targetDistanceM) ? Math.max(100, targetDistanceM) : 100, debugEnabled)
+  // 計測画面でGPS計測中の間だけ画面の自動スリープを防ぐ（ゴール・中止・画面離脱で解除）
+  const wakeLock = useScreenWakeLock(screen === 'tracking' && tracker.status === 'tracking')
   const timeTargetSeconds = useMemo(
     () => secondsFromMinutesSeconds(targetMin, targetSec),
     [targetMin, targetSec],
@@ -122,6 +126,8 @@ export default function App() {
     commitStarted.current = false
     setScreen('tracking')
     tracker.start()
+    // ユーザー操作（STARTタップ）の中で要求する。失敗してもGPS計測は継続する
+    wakeLock.request()
   }
 
   function submitRegistration(): void {
@@ -213,6 +219,7 @@ export default function App() {
             <button className="secondary" onClick={() => void openRanking('time')}>タイムランキング</button>
             <button className="secondary" onClick={() => void openRanking('steps')}>歩数ランキング</button>
           </div>
+          <InstallGuide />
         </section>
       )}
 
@@ -253,14 +260,14 @@ export default function App() {
         </section>
       )}
 
-      {screen === 'tracking' && <TrackingDisplay mode={mode} distanceM={tracker.distanceM} targetDistanceM={targetDistanceM} elapsedMs={tracker.elapsedMs} error={tracker.error ?? message} debugInfo={debugEnabled ? tracker.debugInfo : undefined} onCancel={() => { tracker.cancel(); setScreen('home') }} />}
+      {screen === 'tracking' && <TrackingDisplay mode={mode} distanceM={tracker.distanceM} targetDistanceM={targetDistanceM} elapsedMs={tracker.elapsedMs} error={tracker.error ?? message} debugInfo={debugEnabled ? tracker.debugInfo : undefined} wakeLock={wakeLock} onCancel={() => { tracker.cancel(); setScreen('home') }} />}
 
       {screen === 'steps-entry' && (
         <section className="panel"><div className="eyebrow">GOAL!</div><h2>何歩で歩きましたか？</h2><p>目標：{targetSteps.toLocaleString()}歩</p>
           <input className="big-input" type="number" inputMode="numeric" min="1" step="1" placeholder="実際の歩数" value={actualSteps} onChange={(event) => setActualSteps(event.target.value)} />
           {message && <p className="error" role="alert">{message}</p>}
           <button className="primary" disabled={busy} onClick={() => void commitStepsResult()}>{busy ? '保存中…' : '記録する'}</button>
-          {debugEnabled && <GpsTestTools mode={mode} targetDistanceM={targetDistanceM} measuredDistanceM={tracker.debugInfo.cumulativeDistanceM} elapsedMs={tracker.elapsedMs} debugInfo={tracker.debugInfo} />}
+          {debugEnabled && <GpsTestTools mode={mode} targetDistanceM={targetDistanceM} measuredDistanceM={tracker.debugInfo.cumulativeDistanceM} elapsedMs={tracker.elapsedMs} debugInfo={tracker.debugInfo} wakeLock={wakeLock} />}
         </section>
       )}
 
@@ -270,7 +277,7 @@ export default function App() {
           <div className="distance-result">目標距離 {(lastResult.targetDistanceM / 1000).toFixed(2)}km</div>
           <div className="result-grid"><div><span>目標</span><strong>{lastResult.mode === 'time' ? formatTime(lastResult.targetValue * 1000) : `${lastResult.targetValue.toLocaleString()}歩`}</strong></div><div><span>実績</span><strong>{lastResult.mode === 'time' ? formatTime(lastResult.actualValue * 1000) : `${lastResult.actualValue.toLocaleString()}歩`}</strong></div></div>
           <button className="primary" onClick={() => void openRanking(lastResult.mode)}>ランキングを見る</button><button className="secondary full" onClick={() => setScreen('home')}>ホームへ</button>
-          {debugEnabled && <GpsTestTools mode={lastResult.mode} targetDistanceM={lastResult.targetDistanceM} measuredDistanceM={tracker.debugInfo.cumulativeDistanceM} elapsedMs={tracker.elapsedMs} debugInfo={tracker.debugInfo} />}
+          {debugEnabled && <GpsTestTools mode={lastResult.mode} targetDistanceM={lastResult.targetDistanceM} measuredDistanceM={tracker.debugInfo.cumulativeDistanceM} elapsedMs={tracker.elapsedMs} debugInfo={tracker.debugInfo} wakeLock={wakeLock} />}
         </section>
       )}
 

@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import type { GpsDebugInfo } from '../hooks/useWalkTracker'
+import type { WakeLockInfo } from '../hooks/useScreenWakeLock'
+import { isStandalone } from '../lib/platform'
 import { gpsTestLogsToCsv, readGpsTestLogs, saveGpsTestLog, type GpsTestLog } from '../lib/gpsTestLogs'
 import type { ChallengeMode } from '../types'
 
@@ -9,6 +11,7 @@ type Props = {
   measuredDistanceM: number
   elapsedMs: number
   debugInfo: GpsDebugInfo
+  wakeLock?: WakeLockInfo
 }
 
 type Draft = {
@@ -34,15 +37,14 @@ function optionalNumber(value: string): number | null {
 }
 
 function displayMode(): 'browser' | 'PWA' {
-  const navigatorWithStandalone = navigator as Navigator & { standalone?: boolean }
-  return window.matchMedia('(display-mode: standalone)').matches || navigatorWithStandalone.standalone === true ? 'PWA' : 'browser'
+  return isStandalone() ? 'PWA' : 'browser'
 }
 
 function newId(): string {
   return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
-export function GpsTestTools({ mode, targetDistanceM, measuredDistanceM, elapsedMs, debugInfo }: Props) {
+export function GpsTestTools({ mode, targetDistanceM, measuredDistanceM, elapsedMs, debugInfo, wakeLock }: Props) {
   const [formOpen, setFormOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
@@ -75,6 +77,10 @@ export function GpsTestTools({ mode, targetDistanceM, measuredDistanceM, elapsed
       userAgent: navigator.userAgent,
       displayMode: displayMode(),
       visibilityChangesCount: debugInfo.visibilityChanges,
+      wakeLockSupported: wakeLock?.supported ?? null,
+      wakeLockState: wakeLock?.state ?? null,
+      wakeLockAcquireCount: wakeLock?.acquireCount ?? null,
+      wakeLockReleaseCount: wakeLock?.releaseCount ?? null,
       referenceDistanceM,
       goalErrorM,
       deviceMemo: draft.deviceMemo.trim(),
@@ -118,6 +124,7 @@ export function GpsTestTools({ mode, targetDistanceM, measuredDistanceM, elapsed
               <strong>{new Date(log.testDateTime).toLocaleString('ja-JP')} · {log.challengeMode.toUpperCase()}</strong>
               <span>計測 {log.measuredDistanceM.toFixed(1)}m / 目標 {log.targetDistanceM.toFixed(1)}m</span>
               <span>accuracy 平均 {log.averageAccuracyM?.toFixed(1) ?? '—'}m · 採用/除外 {log.acceptedGpsPoints}/{log.rejectedGpsPoints}</span>
+              {log.wakeLockState != null && <span>WakeLock {log.wakeLockSupported ? '対応' : '非対応'} · {log.wakeLockState} · 取得/解除 {log.wakeLockAcquireCount ?? 0}/{log.wakeLockReleaseCount ?? 0} · 表示変化 {log.visibilityChangesCount}</span>}
               <span>基準距離 {log.referenceDistanceM?.toFixed(1) ?? '—'}m · ゴール誤差 {log.goalErrorM?.toFixed(1) ?? '—'}m</span>
               {(log.deviceMemo || log.comment) && <small>{[log.deviceMemo, log.comment].filter(Boolean).join(' / ')}</small>}
             </article>

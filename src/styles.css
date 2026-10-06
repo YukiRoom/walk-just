@@ -182,3 +182,12 @@ progress { width:100%; height:14px; accent-color:#101828; }
 .ranking-list li div strong { overflow-wrap:anywhere; }
 .ranking-list li.mine { background:#f5f8ff; border-radius:12px; }
 .you-badge { display:inline-block; margin-left:6px; padding:1px 7px; border-radius:999px; background:#101828; color:white; font-size:10px; font-style:normal; font-weight:900; letter-spacing:.06em; vertical-align:middle; }
+
+.screen-warning { margin:18px 0 0; padding:12px 14px; border-radius:14px; background:#fffaeb; color:#93370d; font-weight:700; font-size:14px; line-height:1.6; text-align:left; }
+.screen-note { margin:18px 0 0; font-size:12px; color:#667085; }
+.install-guide { margin-top:18px; padding:16px; border-radius:18px; background:#f2f5ff; text-align:left; min-width:0; }
+.install-guide-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+.install-guide-head strong { min-width:0; font-size:15px; line-height:1.5; }
+.install-guide-close { flex:0 0 auto; width:32px; height:32px; border:0; border-radius:999px; background:white; color:#475467; font-size:18px; line-height:1; cursor:pointer; }
+.install-guide ol { margin:10px 0 0; padding-left:20px; font-size:14px; line-height:1.7; }
+.install-guide p { margin:10px 0 0; font-size:12px; line-height:1.6; color:#475467; }

@@ -17,6 +17,11 @@ export type GpsTestLog = {
   userAgent: string
   displayMode: 'browser' | 'PWA'
   visibilityChangesCount: number
+  /** 以下は Wake Lock 対応後に追加（旧ログでは未定義） */
+  wakeLockSupported?: boolean | null
+  wakeLockState?: string | null
+  wakeLockAcquireCount?: number | null
+  wakeLockReleaseCount?: number | null
   referenceDistanceM: number | null
   goalErrorM: number | null
   deviceMemo: string
@@ -62,12 +67,14 @@ export function gpsTestLogsToCsv(logs: GpsTestLog[]): string {
     'accepted_gps_points', 'rejected_gps_points', 'latest_segment_distance_m', 'average_accuracy_m',
     'maximum_accuracy_m', 'minimum_accuracy_m', 'test_date_time', 'user_agent', 'display_mode',
     'visibility_changes_count', 'reference_distance_m', 'goal_error_m', 'device_memo', 'screen_lock_used', 'comment',
+    'wake_lock_supported', 'wake_lock_state', 'wake_lock_acquire_count', 'wake_lock_release_count',
   ]
   const rows = logs.map((log) => [
     log.challengeMode, log.targetDistanceM, log.measuredDistanceM, log.elapsedMs, log.gpsAccuracyM,
     log.acceptedGpsPoints, log.rejectedGpsPoints, log.latestSegmentDistanceM, log.averageAccuracyM,
     log.maximumAccuracyM, log.minimumAccuracyM, log.testDateTime, log.userAgent, log.displayMode,
     log.visibilityChangesCount, log.referenceDistanceM, log.goalErrorM, log.deviceMemo, log.screenLockUsed, log.comment,
+    log.wakeLockSupported ?? null, log.wakeLockState ?? null, log.wakeLockAcquireCount ?? null, log.wakeLockReleaseCount ?? null,
   ].map(csvCell).join(','))
   return `\uFEFF${headers.map(csvCell).join(',')}\r\n${rows.join('\r\n')}\r\n`
 }
