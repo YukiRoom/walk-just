@@ -1,5 +1,5 @@
 import { formatTime } from '../lib/format'
-import type { GpsDebugInfo, GpsReadiness, TrackerStatus } from '../hooks/useWalkTracker'
+import type { GpsDebugInfo, GpsReadiness, GpsSignal, TrackerStatus } from '../hooks/useWalkTracker'
 import type { WakeLockInfo } from '../hooks/useScreenWakeLock'
 import { GpsTestTools } from './GpsTestTools'
 import type { ChallengeMode } from '../types'
@@ -14,6 +14,7 @@ type Props = {
   wakeLock: WakeLockInfo
   status: TrackerStatus
   readiness: GpsReadiness
+  signal: GpsSignal
   onBegin: () => void
   onCancel: () => void
 }
@@ -26,11 +27,15 @@ const WAKE_LOCK_STATE_LABEL: Record<WakeLockInfo['state'], string> = {
   unsupported: '非対応', idle: '未取得', requesting: '取得中…', active: '取得中（有効）', released: '解除済み', failed: '取得失敗',
 }
 
-function GpsDebugPanel({ info, wakeLock }: { info: GpsDebugInfo; wakeLock: WakeLockInfo }) {
+// この秒数以上受信がなければ「受信できていません」と表示する
+const SIGNAL_STALE_MS = 15000
+
+function GpsDebugPanel({ info, wakeLock, elapsedMs }: { info: GpsDebugInfo; wakeLock: WakeLockInfo; elapsedMs: number }) {
   return (
     <aside className="gps-debug" aria-label="GPSデバッグ情報">
       <strong>GPS DEBUG</strong>
       <dl>
+        <div><dt>経過時間</dt><dd>{formatTime(elapsedMs)}</dd></div>
         <div><dt>accuracy</dt><dd>{value(info.accuracyM, 1, ' m')}</dd></div>
         <div><dt>緯度 / 経度</dt><dd>{value(info.latitude, 6)} / {value(info.longitude, 6)}</dd></div>
         <div><dt>採用 / 除外</dt><dd>{info.acceptedPoints} / {info.rejectedPoints}</dd></div>
@@ -44,6 +49,10 @@ function GpsDebugPanel({ info, wakeLock }: { info: GpsDebugInfo; wakeLock: WakeL
         <div><dt>準備OKまで</dt><dd>{info.warmupReadyMs === null ? '—' : `${(info.warmupReadyMs / 1000).toFixed(1)} s`}</dd></div>
         <div><dt>計測開始まで</dt><dd>{info.warmupTotalMs === null ? '—' : `${(info.warmupTotalMs / 1000).toFixed(1)} s`}{info.startedWhenReady === false ? '（準備OK前に開始）' : ''}</dd></div>
         <div><dt>開始時accuracy</dt><dd>{value(info.startAccuracyM, 1, ' m')}</dd></div>
+        <div><dt>BG回数/時間</dt><dd>{info.backgroundCount} / {(info.backgroundTotalMs / 1000).toFixed(1)} s</dd></div>
+        <div><dt>補完 回数/距離</dt><dd>{info.bridgeCount} / {info.bridgedDistanceM.toFixed(1)} m{info.bridgeRejectedCount > 0 ? `（不採用 ${info.bridgeRejectedCount}）` : ''}</dd></div>
+        <div><dt>最新補完</dt><dd>{info.lastBridgeM === null ? '—' : `${info.lastBridgeM.toFixed(1)} m / ${((info.lastBridgeGapMs ?? 0) / 1000).toFixed(1)} s`}</dd></div>
+        <div><dt>一時GPSエラー</dt><dd>{info.softErrorCount}</dd></div>
         <div><dt>WakeLock対応</dt><dd>{wakeLock.supported ? 'あり' : 'なし'}</dd></div>
         <div><dt>WakeLock状態</dt><dd>{WAKE_LOCK_STATE_LABEL[wakeLock.state]}</dd></div>
         <div><dt>WakeLock取得/解除</dt><dd>{wakeLock.acquireCount} / {wakeLock.releaseCount}</dd></div>
@@ -53,8 +62,10 @@ function GpsDebugPanel({ info, wakeLock }: { info: GpsDebugInfo; wakeLock: WakeL
   )
 }
 
-export function TrackingDisplay({ mode, distanceM, targetDistanceM, elapsedMs, error, debugInfo, wakeLock, status, readiness, onBegin, onCancel }: Props) {
+export function TrackingDisplay({ mode, distanceM, targetDistanceM, elapsedMs, error, debugInfo, wakeLock, status, readiness, signal, onBegin, onCancel }: Props) {
   const preparing = status === 'preparing'
+  // elapsedMsは200msごとに更新されるため、受信が途絶えたかどうかの判定もそれに合わせて再評価される
+  const signalStale = signal.lastFixAt === null || Date.now() - signal.lastFixAt > SIGNAL_STALE_MS
   const wakeLockUnavailable = !wakeLock.supported || wakeLock.state === 'failed'
   return (
     <section className="panel tracking" aria-live="polite">
@@ -79,25 +90,30 @@ export function TrackingDisplay({ mode, distanceM, targetDistanceM, elapsedMs, e
       ) : (
         <>
           <h2>チャレンジ中</h2>
-          <div className="metric">
-            <span>現在距離</span>
-            <strong>{(distanceM / 1000).toFixed(3)} km</strong>
-            <small>目標 {(targetDistanceM / 1000).toFixed(2)} km</small>
+          {/* 距離・タイムを当てるゲームのため、途中経過（現在距離・進捗・経過時間）は表示しない */}
+          <div className="secret-card">
+            <span className="secret-walker" aria-hidden="true">🚶</span>
+            <strong>距離とタイムはゴールまでヒミツ！</strong>
+            <small>目標 {(targetDistanceM / 1000).toFixed(2)} km に着くと自動でゴールします</small>
           </div>
-          <progress value={distanceM} max={targetDistanceM} aria-label="距離の進捗" />
-          <div className="metric subtle">
-            <span>経過時間</span>
-            <strong>{formatTime(elapsedMs)}</strong>
+          <div className={`gps-signal${signal.resuming ? ' resuming' : signalStale ? ' stale' : ''}`} role="status">
+            <i aria-hidden="true" />
+            <span>{signal.resuming
+              ? 'GPSの位置を再確認しています…'
+              : signalStale
+                ? (signal.warning ?? 'GPSを受信できていません。空が開けた場所で歩き続けてください。')
+                : 'GPS受信中'}</span>
           </div>
+          <p className="background-note">📷 写真撮影などで他のアプリに切り替えてもチャレンジは続きます。切り替え中や画面ロック中はGPSが止まるため、戻ったときに離れた地点から戻った地点までを直線距離で補完します。</p>
         </>
       )}
       {wakeLockUnavailable ? (
         <p className="screen-warning" role="alert">計測中は画面を消さないでください。<br />画面がロックされるとGPS計測が停止する場合があります。</p>
       ) : wakeLock.state === 'active' && (
-        <p className="screen-note">画面の自動スリープを防止しています。電源ボタンで画面をロックしないでください。</p>
+        <p className="screen-note">画面の自動スリープを防止しています。</p>
       )}
       {error && <p className="error" role="alert">{error}</p>}
-      {debugInfo && <><GpsDebugPanel info={debugInfo} wakeLock={wakeLock} /><GpsTestTools mode={mode} targetDistanceM={targetDistanceM} measuredDistanceM={distanceM} elapsedMs={elapsedMs} debugInfo={debugInfo} wakeLock={wakeLock} /></>}
+      {debugInfo && <><GpsDebugPanel info={debugInfo} wakeLock={wakeLock} elapsedMs={elapsedMs} /><GpsTestTools mode={mode} targetDistanceM={targetDistanceM} measuredDistanceM={distanceM} elapsedMs={elapsedMs} debugInfo={debugInfo} wakeLock={wakeLock} /></>}
       <button className="danger" onClick={onCancel}>チャレンジを中止</button>
     </section>
   )

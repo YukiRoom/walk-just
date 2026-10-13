@@ -279,7 +279,7 @@ export default function App() {
         </section>
       )}
 
-      {screen === 'tracking' && <TrackingDisplay mode={mode} distanceM={tracker.distanceM} targetDistanceM={targetDistanceM} elapsedMs={tracker.elapsedMs} error={tracker.error ?? message} debugInfo={debugEnabled ? tracker.debugInfo : undefined} wakeLock={wakeLock} status={tracker.status} readiness={tracker.readiness} onBegin={tracker.begin} onCancel={() => { tracker.cancel(); setScreen('home') }} />}
+      {screen === 'tracking' && <TrackingDisplay mode={mode} distanceM={tracker.distanceM} targetDistanceM={targetDistanceM} elapsedMs={tracker.elapsedMs} error={tracker.error ?? message} debugInfo={debugEnabled ? tracker.debugInfo : undefined} wakeLock={wakeLock} status={tracker.status} readiness={tracker.readiness} signal={tracker.signal} onBegin={tracker.begin} onCancel={() => { tracker.cancel(); setScreen('home') }} />}
 
       {screen === 'steps-entry' && (
         <section className="panel"><div className="eyebrow">GOAL!</div><h2>何歩で歩きましたか？</h2><p>目標：{targetSteps.toLocaleString()}歩</p>

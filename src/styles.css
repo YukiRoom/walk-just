@@ -201,3 +201,18 @@ progress { width:100%; height:14px; accent-color:#101828; }
 .gps-prepare-dots i.on { background:#12b76a; }
 .gps-prepare-force { display:block; margin:14px auto 0; color:#475467; font-size:13px; text-decoration:underline; }
 .build-id { margin:18px 0 0; text-align:right; font-size:11px; color:#98a2b3; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+
+.secret-card { margin:22px 0 0; padding:28px 18px; border-radius:24px; background:#f2f5ff; }
+.secret-card strong, .secret-card small { display:block; }
+.secret-card strong { font-size:20px; margin-top:10px; }
+.secret-card small { margin-top:8px; color:#475467; }
+.secret-walker { display:inline-block; font-size:44px; animation: walker-bob 1.2s ease-in-out infinite; }
+@keyframes walker-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+@media (prefers-reduced-motion: reduce) { .secret-walker { animation: none; } }
+.gps-signal { display:flex; align-items:center; justify-content:center; gap:8px; margin-top:16px; font-size:14px; font-weight:700; color:#067647; }
+.gps-signal i { flex:0 0 auto; width:10px; height:10px; border-radius:999px; background:#12b76a; }
+.gps-signal.resuming { color:#175cd3; }
+.gps-signal.resuming i { background:#2e90fa; }
+.gps-signal.stale { color:#b54708; }
+.gps-signal.stale i { background:#f79009; }
+.background-note { margin:14px 0 0; font-size:12px; line-height:1.6; color:#667085; text-align:left; }

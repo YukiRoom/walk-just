@@ -27,6 +27,28 @@ const READY_MAX_JUMP_M = 20
 const FRESH_FIX_TOLERANCE_MS = 2000
 const ANCHOR_MAX_AGE_MS = 5000
 
+// 他アプリへの切り替え・画面ロックから戻った後の再開処理
+// iOSのWebアプリ／PWAはバックグラウンドでGPSを受信できないため、戻った後に位置を再確認し、
+// 離れた地点（最後の採用地点）から戻った地点までを直線距離で補完する。
+const RESUME_ACCURACY_M = 20
+const RESUME_CONFIRM_FIXES = 2
+const RESUME_MAX_JUMP_M = 20
+// 補完区間の速度上限（計測中フィルターの maxSpeedMps と同じ値）
+const BRIDGE_MAX_SPEED_MPS = 4.5
+const BRIDGE_MIN_SEGMENT_M = 2
+
+/** 計測中のGPS受信状況（距離・タイムを見せずに受信状態だけを表示するため） */
+export type GpsSignal = {
+  /** 最後に位置を受信した時刻（Date.now基準） */
+  lastFixAt: number | null
+  /** 他アプリ等から戻った後、位置を再確認中 */
+  resuming: boolean
+  /** 一時的なGPSエラー（計測は継続） */
+  warning: string | null
+}
+
+const EMPTY_SIGNAL: GpsSignal = { lastFixAt: null, resuming: false, warning: null }
+
 const EMPTY_READINESS: GpsReadiness = { fixes: 0, accuracyM: null, stableFixes: 0, ready: false, canStart: false }
 
 export type GpsDebugInfo = {
@@ -53,6 +75,20 @@ export type GpsDebugInfo = {
   startAccuracyM: number | null
   /** 計測開始時に準備OKだったか */
   startedWhenReady: boolean | null
+  /** バックグラウンド（非表示）になった回数（計測中） */
+  backgroundCount: number
+  /** 非表示だった合計時間 */
+  backgroundTotalMs: number
+  /** 直線補完した回数 / 合計距離 */
+  bridgeCount: number
+  bridgedDistanceM: number
+  /** 速度超過などで補完せず起点を置き直した回数 */
+  bridgeRejectedCount: number
+  /** 最新の補完区間（距離・時間） */
+  lastBridgeM: number | null
+  lastBridgeGapMs: number | null
+  /** 計測を止めなかったGPSエラーの回数 */
+  softErrorCount: number
 }
 
 const EMPTY_DEBUG_INFO: GpsDebugInfo = {
@@ -74,6 +110,14 @@ const EMPTY_DEBUG_INFO: GpsDebugInfo = {
   warmupFixes: 0,
   startAccuracyM: null,
   startedWhenReady: null,
+  backgroundCount: 0,
+  backgroundTotalMs: 0,
+  bridgeCount: 0,
+  bridgedDistanceM: 0,
+  bridgeRejectedCount: 0,
+  lastBridgeM: null,
+  lastBridgeGapMs: null,
+  softErrorCount: 0,
 }
 
 function geolocationErrorMessage(error: GeolocationPositionError): string {
@@ -89,6 +133,7 @@ export function useWalkTracker(targetDistanceM: number, debugEnabled = false) {
   const [error, setError] = useState<string | null>(null)
   const [debugInfo, setDebugInfo] = useState<GpsDebugInfo>(EMPTY_DEBUG_INFO)
   const [readiness, setReadiness] = useState<GpsReadiness>(EMPTY_READINESS)
+  const [signal, setSignal] = useState<GpsSignal>(EMPTY_SIGNAL)
 
   const previousPoint = useRef<GeoPoint | null>(null)
   const distanceRef = useRef(0)
@@ -104,6 +149,10 @@ export function useWalkTracker(targetDistanceM: number, debugEnabled = false) {
   const latestFix = useRef<GeoPoint | null>(null)
   const stableFixesRef = useRef(0)
   const warmupFixesRef = useRef(0)
+  const hiddenAtRef = useRef<number | null>(null)
+  const resumeRef = useRef<{ pending: boolean; visibleAt: number; candidate: GeoPoint | null; confirmations: number }>({
+    pending: false, visibleAt: 0, candidate: null, confirmations: 0,
+  })
 
   const stopInternals = useCallback(() => {
     if (watchId.current !== null && 'geolocation' in navigator) {
@@ -132,6 +181,9 @@ export function useWalkTracker(targetDistanceM: number, debugEnabled = false) {
     phaseRef.current = 'idle'
     stopInternals()
     setReadiness(EMPTY_READINESS)
+    setSignal(EMPTY_SIGNAL)
+    hiddenAtRef.current = null
+    resumeRef.current = { pending: false, visibleAt: 0, candidate: null, confirmations: 0 }
     setStatus('idle')
     setError(null)
     previousPoint.current = null
@@ -143,6 +195,29 @@ export function useWalkTracker(targetDistanceM: number, debugEnabled = false) {
     accuracySumRef.current = 0
     accuracySamplesRef.current = 0
   }, [stopInternals])
+
+  /** 採用した区間を距離に加算し、目標到達なら通過時刻を補間してゴールする */
+  const addSegment = useCallback((previous: GeoPoint, next: GeoPoint, segmentM: number) => {
+    const distanceBeforeM = distanceRef.current
+    previousPoint.current = next
+    const updatedM = distanceBeforeM + segmentM
+    distanceRef.current = updatedM
+    if (debugEnabled) setDebugInfo((current) => ({ ...current, cumulativeDistanceM: updatedM }))
+
+    if (updatedM >= targetDistanceM) {
+      const preciseMs = crossingElapsedMs(
+        startedAt.current ?? next.timestamp,
+        previous,
+        next,
+        distanceBeforeM,
+        targetDistanceM,
+        segmentM,
+      )
+      finish(preciseMs)
+      return
+    }
+    setDistanceM(updatedM)
+  }, [debugEnabled, finish, targetDistanceM])
 
   /** 計測中（タイマー開始後）の位置処理。既存のフィルター・距離計算・自動ゴールをそのまま使う */
   const handleTrackingPoint = useCallback((next: GeoPoint) => {
@@ -176,27 +251,58 @@ export function useWalkTracker(targetDistanceM: number, debugEnabled = false) {
       previousPoint.current = next
       return
     }
+    addSegment(previous, next, segmentM)
+  }, [addSegment, debugEnabled])
 
-    const distanceBeforeM = distanceRef.current
-    previousPoint.current = next
-    const updatedM = distanceBeforeM + segmentM
-    distanceRef.current = updatedM
-    if (debugEnabled) setDebugInfo((current) => ({ ...current, cumulativeDistanceM: updatedM }))
+  /**
+   * 他アプリ・画面ロックから戻った直後の位置処理。
+   * 精度の良い位置が連続して得られたら、最後の採用地点からの直線距離を1区間として加算する。
+   */
+  const handleResumePoint = useCallback((next: GeoPoint) => {
+    const resume = resumeRef.current
+    const fresh = next.timestamp >= resume.visibleAt - FRESH_FIX_TOLERANCE_MS
+    if (fresh && next.accuracy <= RESUME_ACCURACY_M) {
+      const steady = resume.candidate !== null && haversineMeters(resume.candidate, next) <= RESUME_MAX_JUMP_M
+      resume.confirmations = steady ? resume.confirmations + 1 : 1
+      resume.candidate = next
+    } else {
+      resume.confirmations = 0
+      resume.candidate = null
+    }
+    if (debugEnabled) {
+      setDebugInfo((current) => ({ ...current, accuracyM: next.accuracy, latitude: next.lat, longitude: next.lng, timestamp: next.timestamp }))
+    }
+    if (resume.confirmations < RESUME_CONFIRM_FIXES) return
 
-    if (updatedM >= targetDistanceM) {
-      const preciseMs = crossingElapsedMs(
-        startedAt.current ?? next.timestamp,
-        previous,
-        next,
-        distanceBeforeM,
-        targetDistanceM,
-        segmentM,
-      )
-      finish(preciseMs)
+    resumeRef.current = { pending: false, visibleAt: 0, candidate: null, confirmations: 0 }
+    setSignal((current) => ({ ...current, resuming: false }))
+    const previous = previousPoint.current
+    if (!previous) {
+      previousPoint.current = next
       return
     }
-    setDistanceM(updatedM)
-  }, [debugEnabled, finish, targetDistanceM])
+    const segmentM = haversineMeters(previous, next)
+    const gapMs = Math.max(1, next.timestamp - previous.timestamp)
+    const speedMps = segmentM / (gapMs / 1000)
+    if (segmentM < BRIDGE_MIN_SEGMENT_M) return
+    if (speedMps > BRIDGE_MAX_SPEED_MPS) {
+      // 徒歩では不自然な移動（乗り物など）は加算せず、戻った地点から計測を続ける
+      previousPoint.current = next
+      if (debugEnabled) setDebugInfo((current) => ({ ...current, bridgeRejectedCount: current.bridgeRejectedCount + 1, lastBridgeM: segmentM, lastBridgeGapMs: gapMs }))
+      return
+    }
+    if (debugEnabled) {
+      setDebugInfo((current) => ({
+        ...current,
+        bridgeCount: current.bridgeCount + 1,
+        bridgedDistanceM: current.bridgedDistanceM + segmentM,
+        lastBridgeM: segmentM,
+        lastBridgeGapMs: gapMs,
+        latestSegmentM: segmentM,
+      }))
+    }
+    addSegment(previous, next, segmentM)
+  }, [addSegment, debugEnabled])
 
   /** 準備中の位置処理。距離には加算せず、準備OKかどうかだけを判定する */
   const handlePreparingPoint = useCallback((next: GeoPoint) => {
@@ -229,6 +335,51 @@ export function useWalkTracker(targetDistanceM: number, debugEnabled = false) {
     }
   }, [debugEnabled])
 
+  const handlePosition = useCallback((position: GeolocationPosition) => {
+    if (finishedRef.current) return
+    const next: GeoPoint = {
+      lat: position.coords.latitude,
+      lng: position.coords.longitude,
+      accuracy: position.coords.accuracy,
+      timestamp: position.timestamp || Date.now(),
+    }
+    setSignal((current) => ({ ...current, lastFixAt: Date.now(), warning: null }))
+    if (phaseRef.current === 'preparing') handlePreparingPoint(next)
+    else if (phaseRef.current === 'tracking') {
+      if (resumeRef.current.pending) handleResumePoint(next)
+      else handleTrackingPoint(next)
+    }
+  }, [handlePreparingPoint, handleResumePoint, handleTrackingPoint])
+
+  const handlePositionError = useCallback((geoError: GeolocationPositionError) => {
+    if (finishedRef.current) return
+    if (geoError.code !== geoError.PERMISSION_DENIED) {
+      // タイムアウト等は一時的なものとして計測を続ける（他アプリから戻った直後などに発生しうる）
+      setSignal((current) => ({ ...current, warning: geolocationErrorMessage(geoError) }))
+      if (debugEnabled) setDebugInfo((current) => ({ ...current, softErrorCount: current.softErrorCount + 1 }))
+      return
+    }
+    finishedRef.current = true
+    phaseRef.current = 'idle'
+    setError(geolocationErrorMessage(geoError))
+    stopInternals()
+    setStatus('error')
+  }, [debugEnabled, stopInternals])
+
+  const handlePositionRef = useRef(handlePosition)
+  const handlePositionErrorRef = useRef(handlePositionError)
+  handlePositionRef.current = handlePosition
+  handlePositionErrorRef.current = handlePositionError
+
+  const startWatch = useCallback(() => {
+    if (watchId.current !== null) navigator.geolocation.clearWatch(watchId.current)
+    watchId.current = navigator.geolocation.watchPosition(
+      (position) => handlePositionRef.current(position),
+      (geoError) => handlePositionErrorRef.current(geoError),
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 },
+    )
+  }, [])
+
   /** START：GPSの受信を開始し準備中にする。タイマーはまだ動かさない */
   const prepare = useCallback(() => {
     stopInternals()
@@ -254,33 +405,15 @@ export function useWalkTracker(targetDistanceM: number, debugEnabled = false) {
     setElapsedMs(0)
     setDebugInfo(EMPTY_DEBUG_INFO)
     setReadiness(EMPTY_READINESS)
+    setSignal(EMPTY_SIGNAL)
+    hiddenAtRef.current = null
+    resumeRef.current = { pending: false, visibleAt: 0, candidate: null, confirmations: 0 }
     accuracySumRef.current = 0
     accuracySamplesRef.current = 0
     setStatus('preparing')
 
-    watchId.current = navigator.geolocation.watchPosition(
-      (position) => {
-        if (finishedRef.current) return
-        const next: GeoPoint = {
-          lat: position.coords.latitude,
-          lng: position.coords.longitude,
-          accuracy: position.coords.accuracy,
-          timestamp: position.timestamp || Date.now(),
-        }
-        if (phaseRef.current === 'preparing') handlePreparingPoint(next)
-        else if (phaseRef.current === 'tracking') handleTrackingPoint(next)
-      },
-      (geoError) => {
-        if (finishedRef.current) return
-        finishedRef.current = true
-        phaseRef.current = 'idle'
-        setError(geolocationErrorMessage(geoError))
-        stopInternals()
-        setStatus('error')
-      },
-      { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 },
-    )
-  }, [handlePreparingPoint, handleTrackingPoint, stopInternals])
+    startWatch()
+  }, [startWatch, stopInternals])
 
   /** 準備完了後、実際のチャレンジ（タイマー・距離計測）を開始する */
   const begin = useCallback(() => {
@@ -321,6 +454,32 @@ export function useWalkTracker(targetDistanceM: number, debugEnabled = false) {
 
   useEffect(() => stopInternals, [stopInternals])
 
+  // 他アプリへの切り替え・画面ロック（非表示）からの復帰：GPSの受信を張り直し、計測中なら位置を再確認する
+  useEffect(() => {
+    if (status !== 'tracking' && status !== 'preparing') return
+    const handleVisibilityChange = () => {
+      if (finishedRef.current) return
+      const now = Date.now()
+      if (document.visibilityState === 'hidden') {
+        if (hiddenAtRef.current === null) hiddenAtRef.current = now
+        return
+      }
+      const hiddenAt = hiddenAtRef.current
+      hiddenAtRef.current = null
+      if (hiddenAt === null) return
+      if (phaseRef.current === 'tracking') {
+        resumeRef.current = { pending: true, visibleAt: now, candidate: null, confirmations: 0 }
+        setSignal((current) => ({ ...current, resuming: true }))
+        if (debugEnabled) {
+          setDebugInfo((current) => ({ ...current, backgroundCount: current.backgroundCount + 1, backgroundTotalMs: current.backgroundTotalMs + (now - hiddenAt) }))
+        }
+      }
+      if (watchId.current !== null) startWatch()
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [debugEnabled, startWatch, status])
+
   useEffect(() => {
     if (!debugEnabled || (status !== 'tracking' && status !== 'preparing')) return
     const handleVisibilityChange = () => {
@@ -330,5 +489,5 @@ export function useWalkTracker(targetDistanceM: number, debugEnabled = false) {
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
   }, [debugEnabled, status])
 
-  return { status, distanceM, elapsedMs, error, debugInfo, readiness, prepare, begin, cancel }
+  return { status, distanceM, elapsedMs, error, debugInfo, readiness, signal, prepare, begin, cancel }
 }
