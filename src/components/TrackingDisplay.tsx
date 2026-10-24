@@ -16,6 +16,10 @@ type Props = {
   readiness: GpsReadiness
   signal: GpsSignal
   onBegin: () => void
+  /** ゴール後の記録保存中 */
+  saving?: boolean
+  /** ゴール後に保存が失敗した場合の再試行 */
+  onRetrySave?: () => void
   onCancel: () => void
 }
 
@@ -62,15 +66,22 @@ function GpsDebugPanel({ info, wakeLock, elapsedMs }: { info: GpsDebugInfo; wake
   )
 }
 
-export function TrackingDisplay({ mode, distanceM, targetDistanceM, elapsedMs, error, debugInfo, wakeLock, status, readiness, signal, onBegin, onCancel }: Props) {
+export function TrackingDisplay({ mode, distanceM, targetDistanceM, elapsedMs, error, debugInfo, wakeLock, status, readiness, signal, onBegin, saving, onRetrySave, onCancel }: Props) {
   const preparing = status === 'preparing'
+  const finished = status === 'finished'
   // elapsedMsは200msごとに更新されるため、受信が途絶えたかどうかの判定もそれに合わせて再評価される
   const signalStale = signal.lastFixAt === null || Date.now() - signal.lastFixAt > SIGNAL_STALE_MS
   const wakeLockUnavailable = !wakeLock.supported || wakeLock.state === 'failed'
   return (
     <section className="panel tracking" aria-live="polite">
       <div className="eyebrow">{mode === 'time' ? 'TIME CHALLENGE' : 'STEP CHALLENGE'}</div>
-      {preparing ? (
+      {finished ? (
+        <div className="goal-saving">
+          <h2>GOAL!</h2>
+          <p>{saving || !onRetrySave ? '記録を保存しています…' : '記録を保存できませんでした。'}</p>
+          {onRetrySave && !saving && <button className="primary" onClick={onRetrySave}>もう一度保存する</button>}
+        </div>
+      ) : preparing ? (
         <div className="gps-prepare">
           <h2>{readiness.ready ? '準備OK' : 'GPS準備中…'}</h2>
           <div className={`gps-prepare-status${readiness.ready ? ' ready' : ''}`} role="status">
@@ -107,14 +118,14 @@ export function TrackingDisplay({ mode, distanceM, targetDistanceM, elapsedMs, e
           <p className="background-note">📷 写真撮影などで他のアプリに切り替えてもチャレンジは続きます。切り替え中や画面ロック中はGPSが止まるため、戻ったときに離れた地点から戻った地点までを直線距離で補完します。</p>
         </>
       )}
-      {wakeLockUnavailable ? (
+      {finished ? null : wakeLockUnavailable ? (
         <p className="screen-warning" role="alert">計測中は画面を消さないでください。<br />画面がロックされるとGPS計測が停止する場合があります。</p>
       ) : wakeLock.state === 'active' && (
         <p className="screen-note">画面の自動スリープを防止しています。</p>
       )}
       {error && <p className="error" role="alert">{error}</p>}
       {debugInfo && <><GpsDebugPanel info={debugInfo} wakeLock={wakeLock} elapsedMs={elapsedMs} /><GpsTestTools mode={mode} targetDistanceM={targetDistanceM} measuredDistanceM={distanceM} elapsedMs={elapsedMs} debugInfo={debugInfo} wakeLock={wakeLock} /></>}
-      <button className="danger" onClick={onCancel}>チャレンジを中止</button>
+      {!finished && <button className="danger" onClick={onCancel}>チャレンジを中止</button>}
     </section>
   )
 }
