@@ -67,10 +67,12 @@ export async function saveResult(result: ChallengeResult): Promise<void> {
     result.anonymousUserId ? { ...row, anonymous_user_id: result.anonymousUserId } : row
   const { error } = await supabase.from('challenge_results').insert(rowWithUser)
   if (!error) return
+  // 同じIDでの再送（前回の応答だけ失われた場合）は保存済みとして扱う
+  if (error.code === '23505') return
   // anonymous_user_id列の追加マイグレーション未実行時は、列なしで保存して従来通り動作させる
   if (result.anonymousUserId && isMissingAnonymousUserIdColumn(error)) {
     const retry = await supabase.from('challenge_results').insert(row)
-    if (retry.error) throw retry.error
+    if (retry.error && retry.error.code !== '23505') throw retry.error
     return
   }
   throw error

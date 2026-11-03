@@ -1,16 +1,25 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
 import { TrackingDisplay } from './components/TrackingDisplay'
 import { GpsTestTools } from './components/GpsTestTools'
 import { InstallGuide } from './components/InstallGuide'
+import { EventDetail, EventList, EventRanking } from './components/events/EventViews'
 import { useScreenWakeLock } from './hooks/useScreenWakeLock'
 import { useWalkTracker } from './hooks/useWalkTracker'
 import { formatTime, secondsFromMinutesSeconds } from './lib/format'
 import { createUuid, legacyNickname, loadProfile, nicknameError, nicknameLength, NICKNAME_MAX_LENGTH, registerProfile, updateNickname } from './lib/profile'
 import type { Profile } from './lib/profile'
 import { getRankings, saveResult } from './lib/results'
+import { checkIsAdmin, eventErrorMessage, eventsAvailable, fixedTarget, isEventId, startEventAttempt, submitEventResult, type WalkEvent } from './lib/events'
 import type { ChallengeMode, ChallengeResult, DistanceFilter } from './types'
 
-type Screen = 'home' | 'profile' | 'setup' | 'tracking' | 'steps-entry' | 'result' | 'ranking'
+type Screen = 'home' | 'profile' | 'setup' | 'tracking' | 'steps-entry' | 'result' | 'ranking' | 'events' | 'event' | 'event-ranking' | 'admin'
+
+// 管理画面（QRコード生成を含む）は管理者だけが使うため遅延読み込みする
+const AdminPanel = lazy(() => import('./components/events/AdminPanel').then((module) => ({ default: module.AdminPanel })))
+
+const SEARCH_PARAMS = new URLSearchParams(window.location.search)
+const INITIAL_EVENT_ID = isEventId(SEARCH_PARAMS.get('event')) ? SEARCH_PARAMS.get('event') : null
+const ADMIN_REQUESTED = SEARCH_PARAMS.get('admin') === '1'
 
 const DISTANCE_FILTERS: { value: DistanceFilter; label: string }[] = [
   { value: 'all', label: '全距離' }, { value: 500, label: '0.5km' }, { value: 1000, label: '1km' },
@@ -27,7 +36,7 @@ function inputError(distanceKm: number, mode: ChallengeMode, targetMin: number, 
 
 export default function App() {
   const debugEnabled = useMemo(() => new URLSearchParams(window.location.search).get('debug') === '1', [])
-  const [screen, setScreen] = useState<Screen>('home')
+  const [screen, setScreen] = useState<Screen>(ADMIN_REQUESTED ? 'admin' : INITIAL_EVENT_ID ? 'event' : 'home')
   const [mode, setMode] = useState<ChallengeMode>('time')
   const [profile, setProfile] = useState<Profile | null>(() => loadProfile())
   const [nicknameDraft, setNicknameDraft] = useState(() => (profile ? profile.nickname : legacyNickname()))
@@ -45,6 +54,14 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [swUpdateTick, setSwUpdateTick] = useState(0)
   const commitStarted = useRef(false)
+  // 通常モードの記録ID（保存の再試行で重複しないよう1チャレンジにつき1つ）
+  const pendingResultId = useRef<string>(createUuid())
+  const [eventsEnabled, setEventsEnabled] = useState(false)
+  const [eventId, setEventId] = useState<string | null>(INITIAL_EVENT_ID)
+  const [rankingEvent, setRankingEvent] = useState<{ event: WalkEvent; isAdmin: boolean } | null>(null)
+  // イベントで挑戦中の場合のイベントと、サーバーで発行された挑戦ID
+  const [challengeEvent, setChallengeEvent] = useState<WalkEvent | null>(null)
+  const eventAttemptId = useRef<string | null>(null)
   const swUpdateReady = useRef(false)
 
   // 新しいService Workerが有効になったら、ホーム画面にいる時だけ再読み込みして最新版を表示する
@@ -56,6 +73,11 @@ export default function App() {
     return () => navigator.serviceWorker.removeEventListener('controllerchange', handleControllerChange)
   }, [])
 
+  useEffect(() => {
+    // イベント用テーブルがある（migration適用済み）場合だけイベント機能を表示する
+    void eventsAvailable().then(setEventsEnabled)
+  }, [])
+
   const targetDistanceM = Math.round(distanceKm * 1000)
   const tracker = useWalkTracker(Number.isFinite(targetDistanceM) ? Math.max(100, targetDistanceM) : 100, debugEnabled)
   // 計測画面でGPS準備中・計測中の間だけ画面の自動スリープを防ぐ（ゴール・中止・画面離脱で解除）
@@ -65,6 +87,8 @@ export default function App() {
     [targetMin, targetSec],
   )
   const validationMessage = inputError(distanceKm, mode, targetMin, targetSec, targetSteps)
+  // 統一目標のイベントでは目標を変更できない
+  const targetLocked = Boolean(challengeEvent && fixedTarget(challengeEvent, mode))
 
   useEffect(() => {
     if (!swUpdateReady.current || screen !== 'home' || !profile) return
@@ -86,12 +110,26 @@ export default function App() {
     setBusy(true)
     setMessage(null)
     try {
-      await saveResult(result)
-      setLastResult(result)
+      if (challengeEvent && eventAttemptId.current) {
+        // イベントの記録はサーバー関数で検証・保存（同じ挑戦IDの再送は重複しない）。通常ランキングには保存しない
+        const saved = await submitEventResult({
+          attemptId: eventAttemptId.current,
+          targetDistanceM: result.targetDistanceM,
+          targetValue: result.targetValue,
+          actualValue: result.actualValue,
+          elapsedSeconds: result.elapsedSeconds,
+        })
+        setLastResult({ ...result, id: saved.id, errorValue: saved.error_value, createdAt: saved.created_at, eventId: challengeEvent.id })
+      } else {
+        await saveResult(result)
+        setLastResult(result)
+      }
       setScreen('result')
-    } catch {
+    } catch (error) {
       commitStarted.current = false
-      setMessage('記録を保存できませんでした。通信状態を確認して、もう一度お試しください。')
+      setMessage(challengeEvent
+        ? eventErrorMessage(error, 'イベントの記録を保存できませんでした。通信状態を確認して、もう一度お試しください。')
+        : '記録を保存できませんでした。通信状態を確認して、もう一度お試しください。')
     } finally {
       setBusy(false)
     }
@@ -101,7 +139,7 @@ export default function App() {
     if (!profile) return
     const actualSeconds = Math.max(0, Math.round(tracker.elapsedMs / 1000))
     await persistResult({
-      id: createUuid(), playerName: profile.nickname, anonymousUserId: profile.anonymousUserId, mode: 'time', targetDistanceM,
+      id: pendingResultId.current, playerName: profile.nickname, anonymousUserId: profile.anonymousUserId, mode: 'time', targetDistanceM,
       targetValue: timeTargetSeconds, actualValue: actualSeconds,
       errorValue: Math.abs(actualSeconds - timeTargetSeconds), elapsedSeconds: actualSeconds,
       createdAt: new Date().toISOString(),
@@ -119,13 +157,24 @@ export default function App() {
     commitStarted.current = true
     const elapsedSeconds = Math.max(0, Math.round(tracker.elapsedMs / 1000))
     await persistResult({
-      id: createUuid(), playerName: profile.nickname, anonymousUserId: profile.anonymousUserId, mode: 'steps', targetDistanceM,
+      id: pendingResultId.current, playerName: profile.nickname, anonymousUserId: profile.anonymousUserId, mode: 'steps', targetDistanceM,
       targetValue: targetSteps, actualValue: steps, errorValue: Math.abs(steps - targetSteps),
       elapsedSeconds, createdAt: new Date().toISOString(),
     })
   }
 
-  function openSetup(nextMode: ChallengeMode): void {
+  function openSetup(nextMode: ChallengeMode, event: WalkEvent | null = null): void {
+    setChallengeEvent(event)
+    const target = event ? fixedTarget(event, nextMode) : null
+    if (target) {
+      setDistanceKm(target.distanceM / 1000)
+      if (nextMode === 'time') {
+        setTargetMin(Math.floor(target.value / 60))
+        setTargetSec(target.value % 60)
+      } else {
+        setTargetSteps(target.value)
+      }
+    }
     setMode(nextMode)
     setActualSteps('')
     setMessage(null)
@@ -134,12 +183,28 @@ export default function App() {
     setScreen('setup')
   }
 
-  function startChallenge(): void {
+  async function startChallenge(): Promise<void> {
     if (validationMessage) {
       setMessage(validationMessage)
       return
     }
+    if (busy) return
     setMessage(null)
+    eventAttemptId.current = null
+    pendingResultId.current = createUuid()
+    if (challengeEvent) {
+      // タップ（ユーザー操作）の中でWake Lockを要求してから、サーバーで挑戦を開始（承認・期間・回数をDBが検証）
+      wakeLock.request()
+      setBusy(true)
+      try {
+        eventAttemptId.current = await startEventAttempt(challengeEvent.id, mode)
+      } catch (error) {
+        setMessage(eventErrorMessage(error))
+        return
+      } finally {
+        setBusy(false)
+      }
+    }
     commitStarted.current = false
     setScreen('tracking')
     // GPS準備を開始（タイマーは準備完了後の「計測スタート」で開始）
@@ -158,7 +223,7 @@ export default function App() {
     setProfile(next)
     setNicknameDraft(next.nickname)
     setNicknameMessage(null)
-    setScreen('home')
+    setScreen(INITIAL_EVENT_ID ? 'event' : 'home')
   }
 
   function openProfile(): void {
@@ -181,6 +246,22 @@ export default function App() {
     setNicknameMessage('ニックネームを変更しました。')
   }
 
+  function openEvent(id: string): void {
+    setEventId(id)
+    setMessage(null)
+    setScreen('event')
+  }
+
+  async function openEventRanking(event: WalkEvent): Promise<void> {
+    setRankingEvent({ event, isAdmin: await checkIsAdmin() })
+    setScreen('event-ranking')
+  }
+
+  function leaveChallenge(): void {
+    tracker.cancel()
+    setScreen(challengeEvent ? 'event' : 'home')
+  }
+
   async function openRanking(nextMode: ChallengeMode, filter: DistanceFilter = distanceFilter): Promise<void> {
     setRankingMode(nextMode)
     setDistanceFilter(filter)
@@ -195,6 +276,16 @@ export default function App() {
     } finally {
       setBusy(false)
     }
+  }
+
+  if (screen === 'admin') {
+    return (
+      <main className="app-shell">
+        <Suspense fallback={<section className="panel"><p className="empty">読み込み中…</p></section>}>
+          <AdminPanel onExit={() => { window.history.replaceState(null, '', '/'); setScreen('home') }} />
+        </Suspense>
+      </main>
+    )
   }
 
   if (!profile) {
@@ -230,13 +321,14 @@ export default function App() {
           <h1>速さじゃない。<br />ピッタリを競おう。</h1>
           <p>自分で決めた目標に、どれだけ正確に合わせられるかを競うウォーキングゲーム。</p>
           <div className="grid">
-            <button className="mode-card" onClick={() => openSetup('time')}><strong>⏱ TIME CHALLENGE</strong><span>目標距離と目標タイムを自分で設定</span></button>
-            <button className="mode-card" onClick={() => openSetup('steps')}><strong>👟 STEP CHALLENGE</strong><span>目標距離と目標歩数を自分で設定</span></button>
+            <button className="mode-card" onClick={() => openSetup('time', null)}><strong>⏱ TIME CHALLENGE</strong><span>目標距離と目標タイムを自分で設定</span></button>
+            <button className="mode-card" onClick={() => openSetup('steps', null)}><strong>👟 STEP CHALLENGE</strong><span>目標距離と目標歩数を自分で設定</span></button>
           </div>
           <div className="row">
             <button className="secondary" onClick={() => void openRanking('time')}>タイムランキング</button>
             <button className="secondary" onClick={() => void openRanking('steps')}>歩数ランキング</button>
           </div>
+          {eventsEnabled && <button className="event-entry-button" onClick={() => setScreen('events')}>🏁 イベントに参加する</button>}
           <InstallGuide />
           <p className="build-id">build {__APP_BUILD_ID__}</p>
         </section>
@@ -260,26 +352,27 @@ export default function App() {
 
       {screen === 'setup' && (
         <section className="panel">
-          <button className="text-button" onClick={() => setScreen('home')}>← 戻る</button>
+          <button className="text-button" onClick={() => setScreen(challengeEvent ? 'event' : 'home')}>← 戻る</button>
           <div className="eyebrow">{mode === 'time' ? 'TIME CHALLENGE' : 'STEP CHALLENGE'}</div>
-          <h2>目標を設定</h2>
+          <h2>{targetLocked ? '目標を確認' : '目標を設定'}</h2>
+          {challengeEvent && <div className="event-banner">🏁 {challengeEvent.name}{targetLocked ? '（統一目標）' : ''}</div>}
           <div className="player-line"><span>プレイヤー</span><strong>{profile.nickname}さん</strong></div>
-          <label>目標距離（km）<input type="number" inputMode="decimal" min="0.1" max="100" step="0.1" value={distanceKm} onChange={(event) => setDistanceKm(event.target.valueAsNumber)} /></label>
+          <label>目標距離（km）<input type="number" inputMode="decimal" min="0.1" max="100" step="0.1" value={distanceKm} disabled={targetLocked} onChange={(event) => setDistanceKm(event.target.valueAsNumber)} /></label>
           {mode === 'time' ? (
             <div><span className="label-title">目標タイム</span><div className="row">
-              <label className="grow">分<input type="number" inputMode="numeric" min="0" step="1" value={targetMin} onChange={(event) => setTargetMin(event.target.valueAsNumber)} /></label>
-              <label className="grow">秒<input type="number" inputMode="numeric" min="0" max="59" step="1" value={targetSec} onChange={(event) => setTargetSec(event.target.valueAsNumber)} /></label>
+              <label className="grow">分<input type="number" inputMode="numeric" min="0" step="1" value={targetMin} disabled={targetLocked} onChange={(event) => setTargetMin(event.target.valueAsNumber)} /></label>
+              <label className="grow">秒<input type="number" inputMode="numeric" min="0" max="59" step="1" value={targetSec} disabled={targetLocked} onChange={(event) => setTargetSec(event.target.valueAsNumber)} /></label>
             </div></div>
           ) : (
-            <label>目標歩数<input type="number" inputMode="numeric" min="1" step="1" value={targetSteps} onChange={(event) => setTargetSteps(event.target.valueAsNumber)} /></label>
+            <label>目標歩数<input type="number" inputMode="numeric" min="1" step="1" value={targetSteps} disabled={targetLocked} onChange={(event) => setTargetSteps(event.target.valueAsNumber)} /></label>
           )}
           <div className="summary"><span>今回の目標</span><strong>{Number.isFinite(distanceKm) ? distanceKm.toFixed(2) : '—'}km ／ {mode === 'time' ? formatTime(Math.max(0, timeTargetSeconds) * 1000) : `${Number.isFinite(targetSteps) ? targetSteps.toLocaleString() : '—'}歩`}</strong></div>
           {message && <p className="error" role="alert">{message}</p>}
-          <button className="primary" disabled={Boolean(validationMessage)} onClick={startChallenge}>START</button>
+          <button className="primary" disabled={Boolean(validationMessage) || busy} onClick={() => void startChallenge()}>{busy ? '準備中…' : 'START'}</button>
         </section>
       )}
 
-      {screen === 'tracking' && <TrackingDisplay mode={mode} distanceM={tracker.distanceM} targetDistanceM={targetDistanceM} elapsedMs={tracker.elapsedMs} error={tracker.error ?? message} debugInfo={debugEnabled ? tracker.debugInfo : undefined} wakeLock={wakeLock} status={tracker.status} readiness={tracker.readiness} signal={tracker.signal} onBegin={tracker.begin} onCancel={() => { tracker.cancel(); setScreen('home') }} />}
+      {screen === 'tracking' && <TrackingDisplay mode={mode} distanceM={tracker.distanceM} targetDistanceM={targetDistanceM} elapsedMs={tracker.elapsedMs} error={tracker.error ?? message} debugInfo={debugEnabled ? tracker.debugInfo : undefined} wakeLock={wakeLock} status={tracker.status} readiness={tracker.readiness} signal={tracker.signal} onBegin={tracker.begin} onCancel={leaveChallenge} saving={busy} onRetrySave={tracker.status === 'finished' && mode === 'time' && message ? () => void commitTimeResult() : undefined} />}
 
       {screen === 'steps-entry' && (
         <section className="panel"><div className="eyebrow">GOAL!</div><h2>何歩で歩きましたか？</h2><p>目標：{targetSteps.toLocaleString()}歩</p>
@@ -295,9 +388,31 @@ export default function App() {
           <div className="result-score"><span>誤差</span><strong>{lastResult.errorValue}{lastResult.mode === 'time' ? '秒' : '歩'}</strong></div>
           <div className="distance-result">目標距離 {(lastResult.targetDistanceM / 1000).toFixed(2)}km</div>
           <div className="result-grid"><div><span>目標</span><strong>{lastResult.mode === 'time' ? formatTime(lastResult.targetValue * 1000) : `${lastResult.targetValue.toLocaleString()}歩`}</strong></div><div><span>実績</span><strong>{lastResult.mode === 'time' ? formatTime(lastResult.actualValue * 1000) : `${lastResult.actualValue.toLocaleString()}歩`}</strong></div></div>
-          <button className="primary" onClick={() => void openRanking(lastResult.mode)}>ランキングを見る</button><button className="secondary full" onClick={() => setScreen('home')}>ホームへ</button>
+          {lastResult.eventId && challengeEvent ? (
+            <><button className="primary" onClick={() => void openEventRanking(challengeEvent)}>イベントランキングを見る</button><button className="secondary full" onClick={() => setScreen('event')}>イベントへ戻る</button></>
+          ) : (
+            <><button className="primary" onClick={() => void openRanking(lastResult.mode)}>ランキングを見る</button><button className="secondary full" onClick={() => setScreen('home')}>ホームへ</button></>
+          )}
           {debugEnabled && <GpsTestTools mode={lastResult.mode} targetDistanceM={lastResult.targetDistanceM} measuredDistanceM={tracker.debugInfo.cumulativeDistanceM} elapsedMs={tracker.elapsedMs} debugInfo={tracker.debugInfo} wakeLock={wakeLock} />}
         </section>
+      )}
+
+      {screen === 'events' && <EventList onOpen={(event) => openEvent(event.id)} onBack={() => setScreen('home')} />}
+
+      {screen === 'event' && eventId && (
+        <EventDetail
+          key={eventId}
+          eventId={eventId}
+          nickname={profile.nickname}
+          anonymousUserId={profile.anonymousUserId}
+          onChallenge={(event, nextMode) => openSetup(nextMode, event)}
+          onRanking={(event) => void openEventRanking(event)}
+          onBack={() => setScreen(eventsEnabled ? 'events' : 'home')}
+        />
+      )}
+
+      {screen === 'event-ranking' && rankingEvent && (
+        <EventRanking event={rankingEvent.event} isAdmin={rankingEvent.isAdmin} initialMode={lastResult?.eventId === rankingEvent.event.id ? lastResult.mode : undefined} onBack={() => openEvent(rankingEvent.event.id)} />
       )}
 
       {screen === 'ranking' && (

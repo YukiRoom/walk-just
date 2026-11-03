@@ -12,6 +12,8 @@ export type ChallengeResult = {
   errorValue: number
   elapsedSeconds: number
   createdAt: string
+  /** イベントで記録した場合のイベントID（通常モードでは未設定） */
+  eventId?: string
 }
 
 export type DistanceFilter = 'all' | 500 | 1000 | 2000 | 3000 | 5000
